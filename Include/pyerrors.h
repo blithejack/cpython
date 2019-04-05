@@ -78,6 +78,7 @@ PyAPI_FUNC(void) PyErr_SetNone(PyObject *);
 PyAPI_FUNC(void) PyErr_SetObject(PyObject *, PyObject *);
 #ifndef Py_LIMITED_API
 PyAPI_FUNC(void) _PyErr_SetKeyError(PyObject *);
+_PyErr_StackItem *_PyErr_GetTopmostException(PyThreadState *tstate);
 #endif
 PyAPI_FUNC(void) PyErr_SetString(
     PyObject *exception,
@@ -93,9 +94,9 @@ PyAPI_FUNC(void) PyErr_SetExcInfo(PyObject *, PyObject *, PyObject *);
 #endif
 
 #if defined(__clang__) || \
-    (defined(__GNUC_MAJOR__) && \
-     ((__GNUC_MAJOR__ >= 3) || \
-      (__GNUC_MAJOR__ == 2) && (__GNUC_MINOR__ >= 5)))
+    (defined(__GNUC__) && \
+     ((__GNUC__ >= 3) || \
+      (__GNUC__ == 2) && (__GNUC_MINOR__ >= 5)))
 #define _Py_NO_RETURN __attribute__((__noreturn__))
 #else
 #define _Py_NO_RETURN
@@ -218,8 +219,6 @@ PyAPI_DATA(PyObject *) PyExc_IOError;
 #ifdef MS_WINDOWS
 PyAPI_DATA(PyObject *) PyExc_WindowsError;
 #endif
-
-PyAPI_DATA(PyObject *) PyExc_RecursionErrorInst;
 
 /* Predefined warning categories */
 PyAPI_DATA(PyObject *) PyExc_Warning;
@@ -352,7 +351,7 @@ PyAPI_FUNC(PyObject *) _PyErr_TrySetFromCause(
 #endif
 
 
-/* In sigcheck.c or signalmodule.c */
+/* In signalmodule.c */
 PyAPI_FUNC(int) PyErr_CheckSignals(void);
 PyAPI_FUNC(void) PyErr_SetInterrupt(void);
 

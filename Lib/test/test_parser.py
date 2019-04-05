@@ -1,4 +1,6 @@
+import copy
 import parser
+import pickle
 import unittest
 import operator
 import struct
@@ -28,7 +30,7 @@ class RoundtripLegalSyntaxTestCase(unittest.TestCase):
         self.roundtrip(parser.expr, s)
 
     def test_flags_passed(self):
-        # The unicode literals flags has to be passed from the paser to AST
+        # The unicode literals flags has to be passed from the parser to AST
         # generation.
         suite = parser.suite("from __future__ import unicode_literals; x = ''")
         code = suite.compile()
@@ -316,25 +318,27 @@ class RoundtripLegalSyntaxTestCase(unittest.TestCase):
         self.check_suite("try: pass\nexcept: pass\nelse: pass\n"
                          "finally: pass\n")
 
+    def test_if_stmt(self):
+        self.check_suite("if True:\n  pass\nelse:\n  pass\n")
+        self.check_suite("if True:\n  pass\nelif True:\n  pass\nelse:\n  pass\n")
+
     def test_position(self):
         # An absolutely minimal test of position information.  Better
         # tests would be a big project.
         code = "def f(x):\n    return x + 1"
-        st1 = parser.suite(code)
-        st2 = st1.totuple(line_info=1, col_info=1)
+        st = parser.suite(code)
 
         def walk(tree):
             node_type = tree[0]
             next = tree[1]
-            if isinstance(next, tuple):
+            if isinstance(next, (tuple, list)):
                 for elt in tree[1:]:
                     for x in walk(elt):
                         yield x
             else:
                 yield tree
 
-        terminals = list(walk(st2))
-        self.assertEqual([
+        expected = [
             (1, 'def', 1, 0),
             (1, 'f', 1, 4),
             (7, '(', 1, 5),
@@ -350,8 +354,25 @@ class RoundtripLegalSyntaxTestCase(unittest.TestCase):
             (4, '', 2, 16),
             (6, '', 2, -1),
             (4, '', 2, -1),
-            (0, '', 2, -1)],
-                         terminals)
+            (0, '', 2, -1),
+        ]
+
+        self.assertEqual(list(walk(st.totuple(line_info=True, col_info=True))),
+                         expected)
+        self.assertEqual(list(walk(st.totuple())),
+                         [(t, n) for t, n, l, c in expected])
+        self.assertEqual(list(walk(st.totuple(line_info=True))),
+                         [(t, n, l) for t, n, l, c in expected])
+        self.assertEqual(list(walk(st.totuple(col_info=True))),
+                         [(t, n, c) for t, n, l, c in expected])
+        self.assertEqual(list(walk(st.tolist(line_info=True, col_info=True))),
+                         [list(x) for x in expected])
+        self.assertEqual(list(walk(parser.st2tuple(st, line_info=True,
+                                                   col_info=True))),
+                         expected)
+        self.assertEqual(list(walk(parser.st2list(st, line_info=True,
+                                                  col_info=True))),
+                         [list(x) for x in expected])
 
     def test_extended_unpacking(self):
         self.check_suite("*a = y")
@@ -423,6 +444,52 @@ class IllegalSyntaxTestCase(unittest.TestCase):
     def test_junk(self):
         # not even remotely valid:
         self.check_bad_tree((1, 2, 3), "<junk>")
+
+    def test_illegal_terminal(self):
+        tree = \
+            (257,
+             (269,
+              (270,
+               (271,
+                (277,
+                 (1,))),
+               (4, ''))),
+             (4, ''),
+             (0, ''))
+        self.check_bad_tree(tree, "too small items in terminal node")
+        tree = \
+            (257,
+             (269,
+              (270,
+               (271,
+                (277,
+                 (1, b'pass'))),
+               (4, ''))),
+             (4, ''),
+             (0, ''))
+        self.check_bad_tree(tree, "non-string second item in terminal node")
+        tree = \
+            (257,
+             (269,
+              (270,
+               (271,
+                (277,
+                 (1, 'pass', '0', 0))),
+               (4, ''))),
+             (4, ''),
+             (0, ''))
+        self.check_bad_tree(tree, "non-integer third item in terminal node")
+        tree = \
+            (257,
+             (269,
+              (270,
+               (271,
+                (277,
+                 (1, 'pass', 0, 0))),
+               (4, ''))),
+             (4, ''),
+             (0, ''))
+        self.check_bad_tree(tree, "too many items in terminal node")
 
     def test_illegal_yield_1(self):
         # Illegal yield statement: def f(): return 1; yield 1
@@ -628,6 +695,40 @@ class IllegalSyntaxTestCase(unittest.TestCase):
              (4, ''), (0, ''))
         self.check_bad_tree(tree, "from import fred")
 
+    def test_illegal_encoding(self):
+        # Illegal encoding declaration
+        tree = \
+            (340,
+             (257, (0, '')))
+        self.check_bad_tree(tree, "missed encoding")
+        tree = \
+            (340,
+             (257, (0, '')),
+              b'iso-8859-1')
+        self.check_bad_tree(tree, "non-string encoding")
+        tree = \
+            (340,
+             (257, (0, '')),
+              '\udcff')
+        with self.assertRaises(UnicodeEncodeError):
+            parser.sequence2st(tree)
+
+    def test_invalid_node_id(self):
+        tree = (257, (269, (-7, '')))
+        self.check_bad_tree(tree, "negative node id")
+        tree = (257, (269, (99, '')))
+        self.check_bad_tree(tree, "invalid token id")
+        tree = (257, (269, (9999, (0, ''))))
+        self.check_bad_tree(tree, "invalid symbol id")
+
+    def test_ParserError_message(self):
+        try:
+            parser.sequence2st((257,(269,(257,(0,'')))))
+        except parser.ParserError as why:
+            self.assertIn("simple_stmt", str(why))  # Expected
+            self.assertIn("file_input", str(why))     # Got
+
+
 
 class CompileTestCase(unittest.TestCase):
 
@@ -771,6 +872,21 @@ class STObjectTestCase(unittest.TestCase):
         self.assertRaises(TypeError, operator.le, False, st1)
         self.assertRaises(TypeError, operator.lt, st1, 1815)
         self.assertRaises(TypeError, operator.gt, b'waterloo', st2)
+
+    def test_copy_pickle(self):
+        sts = [
+            parser.expr('2 + 3'),
+            parser.suite('x = 2; y = x + 3'),
+            parser.expr('list(x**3 for x in range(20))')
+        ]
+        for st in sts:
+            st_copy = copy.copy(st)
+            self.assertEqual(st_copy.totuple(), st.totuple())
+            st_copy = copy.deepcopy(st)
+            self.assertEqual(st_copy.totuple(), st.totuple())
+            for proto in range(pickle.HIGHEST_PROTOCOL+1):
+                st_copy = pickle.loads(pickle.dumps(st, proto))
+                self.assertEqual(st_copy.totuple(), st.totuple())
 
     check_sizeof = support.check_sizeof
 

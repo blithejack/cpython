@@ -201,7 +201,7 @@ write_bytes(bytesio *self, const char *bytes, Py_ssize_t len)
 }
 
 static PyObject *
-bytesio_get_closed(bytesio *self)
+bytesio_get_closed(bytesio *self, void *Py_UNUSED(ignored))
 {
     if (self->buf == NULL) {
         Py_RETURN_TRUE;
@@ -1084,6 +1084,8 @@ bytesiobuf_traverse(bytesiobuf *self, visitproc visit, void *arg)
 static void
 bytesiobuf_dealloc(bytesiobuf *self)
 {
+    /* bpo-31095: UnTrack is needed before calling any callbacks */
+    PyObject_GC_UnTrack(self);
     Py_CLEAR(self->source);
     Py_TYPE(self)->tp_free(self);
 }

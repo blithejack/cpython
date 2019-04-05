@@ -3,6 +3,8 @@
 #define PY_SSIZE_T_CLEAN
 
 #include "Python.h"
+#include "internal/mem.h"
+#include "internal/pystate.h"
 
 #include "bytes_methods.h"
 #include "pystrhex.h"
@@ -309,9 +311,15 @@ PyBytes_FromFormatV(const char *format, va_list vargs)
             Py_ssize_t i;
 
             p = va_arg(vargs, const char*);
-            i = strlen(p);
-            if (prec > 0 && i > prec)
-                i = prec;
+            if (prec <= 0) {
+                i = strlen(p);
+            }
+            else {
+                i = 0;
+                while (i < prec && p[i]) {
+                    i++;
+                }
+            }
             s = _PyBytesWriter_WriteBytes(&writer, s, p, i);
             if (s == NULL)
                 goto error;
@@ -446,7 +454,7 @@ formatfloat(PyObject *v, int flags, int prec, int type,
     result = PyBytes_FromStringAndSize(p, len);
     PyMem_Free(p);
     *p_result = result;
-    return str;
+    return result != NULL ? str : NULL;
 }
 
 static PyObject *
@@ -817,8 +825,8 @@ _PyBytes_FormatEx(const char *format, Py_ssize_t format_len,
             if (v == NULL)
                 goto error;
 
-            if (fmtcnt < 0) {
-                /* last writer: disable writer overallocation */
+            if (fmtcnt == 0) {
+                /* last write: disable writer overallocation */
                 writer.overallocate = 0;
             }
 
@@ -866,7 +874,7 @@ _PyBytes_FormatEx(const char *format, Py_ssize_t format_len,
                     switch(c)
                     {
                         default:
-                            assert(0 && "'type' not in [diuoxX]");
+                            Py_UNREACHABLE();
                         case 'd':
                         case 'i':
                         case 'u':
@@ -1046,7 +1054,7 @@ _PyBytes_FormatEx(const char *format, Py_ssize_t format_len,
 
         /* If overallocation was disabled, ensure that it was the last
            write. Otherwise, we missed an optimization */
-        assert(writer.overallocate || fmtcnt < 0 || use_bytearray);
+        assert(writer.overallocate || fmtcnt == 0 || use_bytearray);
     } /* until end */
 
     if (argidx < arglen && !dict) {
@@ -1201,7 +1209,7 @@ PyObject *_PyBytes_DecodeEscape(const char *s,
 
             if (!errors || strcmp(errors, "strict") == 0) {
                 PyErr_Format(PyExc_ValueError,
-                             "invalid \\x escape at position %d",
+                             "invalid \\x escape at position %zd",
                              s - 2 - (end - len));
                 goto failed;
             }
@@ -1255,7 +1263,7 @@ PyObject *PyBytes_DecodeEscape(const char *s,
     if (first_invalid_escape != NULL) {
         if (PyErr_WarnFormat(PyExc_DeprecationWarning, 1,
                              "invalid escape sequence '\\%c'",
-                             *first_invalid_escape) < 0) {
+                             (unsigned char)*first_invalid_escape) < 0) {
             Py_DECREF(result);
             return NULL;
         }
@@ -1564,7 +1572,6 @@ bytes_richcompare(PyBytesObject *a, PyBytesObject *b, int op)
     int c;
     Py_ssize_t len_a, len_b;
     Py_ssize_t min_len;
-    PyObject *result;
     int rc;
 
     /* Make sure both arguments are strings. */
@@ -1597,7 +1604,7 @@ bytes_richcompare(PyBytesObject *a, PyBytesObject *b, int op)
                 }
             }
         }
-        result = Py_NotImplemented;
+        Py_RETURN_NOTIMPLEMENTED;
     }
     else if (a == b) {
         switch (op) {
@@ -1605,12 +1612,12 @@ bytes_richcompare(PyBytesObject *a, PyBytesObject *b, int op)
         case Py_LE:
         case Py_GE:
             /* a string is equal to itself */
-            result = Py_True;
+            Py_RETURN_TRUE;
             break;
         case Py_NE:
         case Py_LT:
         case Py_GT:
-            result = Py_False;
+            Py_RETURN_FALSE;
             break;
         default:
             PyErr_BadArgument();
@@ -1620,7 +1627,7 @@ bytes_richcompare(PyBytesObject *a, PyBytesObject *b, int op)
     else if (op == Py_EQ || op == Py_NE) {
         int eq = bytes_compare_eq(a, b);
         eq ^= (op == Py_NE);
-        result = eq ? Py_True : Py_False;
+        return PyBool_FromLong(eq);
     }
     else {
         len_a = Py_SIZE(a);
@@ -1633,22 +1640,10 @@ bytes_richcompare(PyBytesObject *a, PyBytesObject *b, int op)
         }
         else
             c = 0;
-        if (c == 0)
-            c = (len_a < len_b) ? -1 : (len_a > len_b) ? 1 : 0;
-        switch (op) {
-        case Py_LT: c = c <  0; break;
-        case Py_LE: c = c <= 0; break;
-        case Py_GT: c = c >  0; break;
-        case Py_GE: c = c >= 0; break;
-        default:
-            PyErr_BadArgument();
-            return NULL;
-        }
-        result = c ? Py_True : Py_False;
+        if (c != 0)
+            Py_RETURN_RICHCOMPARE(c, 0, op);
+        Py_RETURN_RICHCOMPARE(len_a, len_b, op);
     }
-
-    Py_INCREF(result);
-    return result;
 }
 
 static Py_hash_t
@@ -1832,7 +1827,7 @@ bytes.rpartition
 
 Partition the bytes into three parts using the given separator.
 
-This will search for the separator sep in the bytes, starting and the end. If
+This will search for the separator sep in the bytes, starting at the end. If
 the separator is found, returns a 3-tuple containing the part before the
 separator, the separator itself, and the part after it.
 
@@ -1842,7 +1837,7 @@ objects and the original bytes object.
 
 static PyObject *
 bytes_rpartition_impl(PyBytesObject *self, Py_buffer *sep)
-/*[clinic end generated code: output=191b114cbb028e50 input=67f689e63a62d478]*/
+/*[clinic end generated code: output=191b114cbb028e50 input=d78db010c8cfdbe1]*/
 {
     return stringlib_rpartition(
         (PyObject*) self,
@@ -2470,6 +2465,8 @@ bytes_methods[] = {
      _Py_isalnum__doc__},
     {"isalpha", (PyCFunction)stringlib_isalpha, METH_NOARGS,
      _Py_isalpha__doc__},
+    {"isascii", (PyCFunction)stringlib_isascii, METH_NOARGS,
+     _Py_isascii__doc__},
     {"isdigit", (PyCFunction)stringlib_isdigit, METH_NOARGS,
      _Py_isdigit__doc__},
     {"islower", (PyCFunction)stringlib_islower, METH_NOARGS,
@@ -2606,7 +2603,7 @@ bytes_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     if (PyIndex_Check(x)) {
         size = PyNumber_AsSsize_t(x, PyExc_OverflowError);
         if (size == -1 && PyErr_Occurred()) {
-            if (PyErr_ExceptionMatches(PyExc_OverflowError))
+            if (!PyErr_ExceptionMatches(PyExc_TypeError))
                 return NULL;
             PyErr_Clear();  /* fall through */
         }
@@ -2649,49 +2646,83 @@ fail:
     return NULL;
 }
 
-#define _PyBytes_FROM_LIST_BODY(x, GET_ITEM)                                \
-    do {                                                                    \
-        PyObject *bytes;                                                    \
-        Py_ssize_t i;                                                       \
-        Py_ssize_t value;                                                   \
-        char *str;                                                          \
-        PyObject *item;                                                     \
-                                                                            \
-        bytes = PyBytes_FromStringAndSize(NULL, Py_SIZE(x));                \
-        if (bytes == NULL)                                                  \
-            return NULL;                                                    \
-        str = ((PyBytesObject *)bytes)->ob_sval;                            \
-                                                                            \
-        for (i = 0; i < Py_SIZE(x); i++) {                                  \
-            item = GET_ITEM((x), i);                                        \
-            value = PyNumber_AsSsize_t(item, NULL);                         \
-            if (value == -1 && PyErr_Occurred())                            \
-                goto error;                                                 \
-                                                                            \
-            if (value < 0 || value >= 256) {                                \
-                PyErr_SetString(PyExc_ValueError,                           \
-                                "bytes must be in range(0, 256)");          \
-                goto error;                                                 \
-            }                                                               \
-            *str++ = (char) value;                                          \
-        }                                                                   \
-        return bytes;                                                       \
-                                                                            \
-    error:                                                                  \
-        Py_DECREF(bytes);                                                   \
-        return NULL;                                                        \
-    } while (0)
-
 static PyObject*
 _PyBytes_FromList(PyObject *x)
 {
-    _PyBytes_FROM_LIST_BODY(x, PyList_GET_ITEM);
+    Py_ssize_t i, size = PyList_GET_SIZE(x);
+    Py_ssize_t value;
+    char *str;
+    PyObject *item;
+    _PyBytesWriter writer;
+
+    _PyBytesWriter_Init(&writer);
+    str = _PyBytesWriter_Alloc(&writer, size);
+    if (str == NULL)
+        return NULL;
+    writer.overallocate = 1;
+    size = writer.allocated;
+
+    for (i = 0; i < PyList_GET_SIZE(x); i++) {
+        item = PyList_GET_ITEM(x, i);
+        Py_INCREF(item);
+        value = PyNumber_AsSsize_t(item, NULL);
+        Py_DECREF(item);
+        if (value == -1 && PyErr_Occurred())
+            goto error;
+
+        if (value < 0 || value >= 256) {
+            PyErr_SetString(PyExc_ValueError,
+                            "bytes must be in range(0, 256)");
+            goto error;
+        }
+
+        if (i >= size) {
+            str = _PyBytesWriter_Resize(&writer, str, size+1);
+            if (str == NULL)
+                return NULL;
+            size = writer.allocated;
+        }
+        *str++ = (char) value;
+    }
+    return _PyBytesWriter_Finish(&writer, str);
+
+  error:
+    _PyBytesWriter_Dealloc(&writer);
+    return NULL;
 }
 
 static PyObject*
 _PyBytes_FromTuple(PyObject *x)
 {
-    _PyBytes_FROM_LIST_BODY(x, PyTuple_GET_ITEM);
+    PyObject *bytes;
+    Py_ssize_t i, size = PyTuple_GET_SIZE(x);
+    Py_ssize_t value;
+    char *str;
+    PyObject *item;
+
+    bytes = PyBytes_FromStringAndSize(NULL, size);
+    if (bytes == NULL)
+        return NULL;
+    str = ((PyBytesObject *)bytes)->ob_sval;
+
+    for (i = 0; i < size; i++) {
+        item = PyTuple_GET_ITEM(x, i);
+        value = PyNumber_AsSsize_t(item, NULL);
+        if (value == -1 && PyErr_Occurred())
+            goto error;
+
+        if (value < 0 || value >= 256) {
+            PyErr_SetString(PyExc_ValueError,
+                            "bytes must be in range(0, 256)");
+            goto error;
+        }
+        *str++ = (char) value;
+    }
+    return bytes;
+
+  error:
+    Py_DECREF(bytes);
+    return NULL;
 }
 
 static PyObject *
@@ -2787,6 +2818,9 @@ PyBytes_FromObject(PyObject *x)
             result = _PyBytes_FromIterator(it, x);
             Py_DECREF(it);
             return result;
+        }
+        if (!PyErr_ExceptionMatches(PyExc_TypeError)) {
+            return NULL;
         }
     }
 
@@ -2962,8 +2996,21 @@ _PyBytes_Resize(PyObject **pv, Py_ssize_t newsize)
         /* return early if newsize equals to v->ob_size */
         return 0;
     }
+    if (Py_SIZE(v) == 0) {
+        if (newsize == 0) {
+            return 0;
+        }
+        *pv = _PyBytes_FromSize(newsize, 0);
+        Py_DECREF(v);
+        return (*pv == NULL) ? -1 : 0;
+    }
     if (Py_REFCNT(v) != 1) {
         goto error;
+    }
+    if (newsize == 0) {
+        *pv = _PyBytes_FromSize(0, 0);
+        Py_DECREF(v);
+        return (*pv == NULL) ? -1 : 0;
     }
     /* XXX UNREF/NEWREF interface should be more symmetrical */
     _Py_DEC_REFTOTAL;

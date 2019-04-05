@@ -190,13 +190,13 @@ dl_funcptr _PyImport_FindSharedFuncptrWindows(const char *prefix,
 {
     dl_funcptr p;
     char funcname[258], *import_python;
-    wchar_t *wpathname;
+    const wchar_t *wpathname;
 
 #ifndef _DEBUG
     _Py_CheckPython3();
 #endif
 
-    wpathname = PyUnicode_AsUnicode(pathname);
+    wpathname = _PyUnicode_AsUnicode(pathname);
     if (wpathname == NULL)
         return NULL;
 
@@ -254,7 +254,7 @@ dl_funcptr _PyImport_FindSharedFuncptrWindows(const char *prefix,
                This should not happen if called correctly. */
             if (theLength == 0) {
                 message = PyUnicode_FromFormat(
-                    "DLL load failed with error code %d",
+                    "DLL load failed with error code %u",
                     errorCode);
             } else {
                 /* For some reason a \r\n

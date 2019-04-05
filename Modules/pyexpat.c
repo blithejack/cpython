@@ -243,8 +243,10 @@ string_intern(xmlparseobject *self, const char* str)
     if (!value) {
         if (PyDict_SetItem(self->intern, result, result) == 0)
             return result;
-        else
+        else {
+            Py_DECREF(result);
             return NULL;
+        }
     }
     Py_INCREF(value);
     Py_DECREF(result);
@@ -393,6 +395,7 @@ my_StartElementHandler(void *userData,
                 flag_error(self);
                 Py_DECREF(n);
                 Py_DECREF(v);
+                Py_DECREF(container);
                 return;
             }
             else {
@@ -401,10 +404,12 @@ my_StartElementHandler(void *userData,
             }
         }
         args = string_intern(self, name);
-        if (args != NULL)
-            args = Py_BuildValue("(NN)", args, container);
         if (args == NULL) {
             Py_DECREF(container);
+            return;
+        }
+        args = Py_BuildValue("(NN)", args, container);
+        if (args == NULL) {
             return;
         }
         /* Container is now a borrowed reference; ignore it. */
@@ -565,7 +570,6 @@ my_ElementDeclHandler(void *userData,
         }
         args = Py_BuildValue("NN", nameobj, modelobj);
         if (args == NULL) {
-            Py_DECREF(modelobj);
             flag_error(self);
             goto finally;
         }
@@ -1188,10 +1192,8 @@ newxmlparseobject(const char *encoding, const char *namespace_separator, PyObjec
         Py_DECREF(self);
         return NULL;
     }
-#if XML_COMBINED_VERSION >= 20100 || defined(XML_HAS_SET_HASH_SALT)
-    /* This feature was added upstream in libexpat 2.1.0.  Our expat copy
-     * has a backport of this feature where we also define XML_HAS_SET_HASH_SALT
-     * to indicate that we can still use it. */
+#if XML_COMBINED_VERSION >= 20100
+    /* This feature was added upstream in libexpat 2.1.0. */
     XML_SetHashSalt(self->itself,
                     (unsigned long)_Py_HashSecret.expat.hashsalt);
 #endif
@@ -1645,7 +1647,6 @@ MODULE_INITFUNC(void)
     PyObject *errors_module;
     PyObject *modelmod_name;
     PyObject *model_module;
-    PyObject *sys_modules;
     PyObject *tmpnum, *tmpstr;
     PyObject *codes_dict;
     PyObject *rev_codes_dict;
@@ -1695,11 +1696,6 @@ MODULE_INITFUNC(void)
     */
     PyModule_AddStringConstant(m, "native_encoding", "UTF-8");
 
-    sys_modules = PySys_GetObject("modules");
-    if (sys_modules == NULL) {
-        Py_DECREF(m);
-        return NULL;
-    }
     d = PyModule_GetDict(m);
     if (d == NULL) {
         Py_DECREF(m);
@@ -1709,7 +1705,7 @@ MODULE_INITFUNC(void)
     if (errors_module == NULL) {
         errors_module = PyModule_New(MODULE_NAME ".errors");
         if (errors_module != NULL) {
-            PyDict_SetItem(sys_modules, errmod_name, errors_module);
+            _PyImport_SetModule(errmod_name, errors_module);
             /* gives away the reference to errors_module */
             PyModule_AddObject(m, "errors", errors_module);
         }
@@ -1719,7 +1715,7 @@ MODULE_INITFUNC(void)
     if (model_module == NULL) {
         model_module = PyModule_New(MODULE_NAME ".model");
         if (model_module != NULL) {
-            PyDict_SetItem(sys_modules, modelmod_name, model_module);
+            _PyImport_SetModule(modelmod_name, model_module);
             /* gives away the reference to model_module */
             PyModule_AddObject(m, "model", model_module);
         }
@@ -1885,6 +1881,11 @@ MODULE_INITFUNC(void)
     capi.SetStartDoctypeDeclHandler = XML_SetStartDoctypeDeclHandler;
     capi.SetEncoding = XML_SetEncoding;
     capi.DefaultUnknownEncodingHandler = PyUnknownEncodingHandler;
+#if XML_COMBINED_VERSION >= 20100
+    capi.SetHashSalt = XML_SetHashSalt;
+#else
+    capi.SetHashSalt = NULL;
+#endif
 
     /* export using capsule */
     capi_object = PyCapsule_New(&capi, PyExpat_CAPSULE_NAME, NULL);
